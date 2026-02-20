@@ -18,8 +18,12 @@ const app = express();
 
 // ---------- Global Middleware ----------
 
-// Security headers
-app.use(helmet());
+// Security headers — allow cross-origin image loading for uploaded files
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 
 // CORS
 app.use(
@@ -32,7 +36,7 @@ app.use(
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 500,
   message: { success: false, message: 'Too many requests, please try again later.' },
 });
 app.use('/api', limiter);
@@ -54,6 +58,7 @@ app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/properties', require('./routes/property.routes'));
 app.use('/api/bookings', require('./routes/booking.routes'));
 app.use('/api/enquiries', require('./routes/enquiry.routes'));
+app.use('/api/upload', require('./routes/upload.routes'));
 
 // Health check
 app.get('/api/health', (_req, res) => {

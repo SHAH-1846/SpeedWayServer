@@ -4,7 +4,8 @@
  */
 const validate = (schema) => (req, res, next) => {
   try {
-    schema.parse(req.body);
+    // Assign transformed result back to req.body so transforms take effect
+    req.body = schema.parse(req.body);
     next();
   } catch (error) {
     const errors = error.errors?.map((e) => ({
