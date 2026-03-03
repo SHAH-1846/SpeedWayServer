@@ -1,0 +1,167 @@
+const GlobalSettings = require('../models/GlobalSettings');
+const path = require('path');
+const fs = require('fs');
+
+const SINGLETON_KEY = 'global';
+const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'properties');
+
+/**
+ * Delete an uploaded file given its full URL or relative path.
+ * Silently skips external URLs and non-existent files.
+ */
+function deleteUploadedFile(url) {
+  if (!url) return;
+  try {
+    // Extract filename from URL like "http://localhost:5000/uploads/properties/xxx.png"
+    const match = url.match(/\/uploads\/properties\/([^/?#]+)/);
+    if (!match) return; // External URL — skip
+    const filePath = path.join(UPLOADS_DIR, match[1]);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // Silently ignore — file may already be gone
+  }
+}
+
+/**
+ * Collect all image URLs currently in settings (hero slides + partner logos).
+ */
+function collectImageUrls(settings) {
+  const urls = new Set();
+  if (settings.hero) {
+    for (const slide of settings.hero) {
+      if (slide.imageUrl) urls.add(slide.imageUrl);
+    }
+  }
+  if (settings.partners) {
+    for (const p of settings.partners) {
+      if (p.logoUrl) urls.add(p.logoUrl);
+    }
+  }
+  return urls;
+}
+
+/**
+ * Auto-migrate legacy data formats directly in MongoDB
+ * so the document passes current schema validation.
+ * Uses raw collection queries to bypass Mongoose casting.
+ *  - coreServices: old format was string[], new format is [{ name, icon }]
+ */
+async function migrateIfNeeded() {
+  const collection = GlobalSettings.collection;
+  const raw = await collection.findOne({ key: SINGLETON_KEY });
+  if (!raw) return;
+
+  let update = null;
+  const services = raw.aboutContent?.coreServices;
+  if (Array.isArray(services) && services.length > 0 && typeof services[0] === 'string') {
+    const defaultIcons = ['Building2', 'TrendingUp', 'MapPin', 'Lightbulb', 'Target'];
+    update = {
+      $set: {
+        'aboutContent.coreServices': services.map((s, i) => ({
+          name: s,
+          icon: defaultIcons[i] || '',
+        })),
+      },
+    };
+  }
+
+  if (update) {
+    await collection.updateOne({ key: SINGLETON_KEY }, update);
+  }
+}
+
+/**
+ * @desc    Get global settings (creates defaults if none exist)
+ * @route   GET /api/settings
+ * @access  Public
+ */
+const getSettings = async (req, res, next) => {
+  try {
+    // Migrate legacy data in raw MongoDB before Mongoose loads/casts it
+    await migrateIfNeeded();
+
+    let settings = await GlobalSettings.findOne({ key: SINGLETON_KEY });
+
+    if (!settings) {
+      settings = await GlobalSettings.create({ key: SINGLETON_KEY });
+    }
+
+    // Strip audit log from public response (admins get it separately)
+    const { auditLog, ...publicData } = settings.toObject();
+
+    // If caller is admin, include audit log
+    const isAdmin = req.user && req.user.role === 'admin';
+
+    res.json({
+      success: true,
+      data: isAdmin ? settings : publicData,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Update global settings (partial — PATCH semantics)
+ * @route   PATCH /api/settings
+ * @access  Private/Admin
+ */
+const updateSettings = async (req, res, next) => {
+  try {
+    // Migrate legacy data in raw MongoDB before Mongoose loads/casts it
+    await migrateIfNeeded();
+
+    let settings = await GlobalSettings.findOne({ key: SINGLETON_KEY });
+
+    if (!settings) {
+      settings = await GlobalSettings.create({ key: SINGLETON_KEY });
+    }
+
+    // Determine which sections are being updated for audit
+    const updatedSections = Object.keys(req.body).filter((k) => k !== 'auditLog');
+
+    // Snapshot current image URLs BEFORE applying patches
+    const oldImageUrls = collectImageUrls(settings);
+
+    // Apply updates
+    for (const key of updatedSections) {
+      settings[key] = req.body[key];
+    }
+
+    // Find orphaned images (were in old data but not in new) and delete from disk
+    const newImageUrls = collectImageUrls(settings);
+    for (const oldUrl of oldImageUrls) {
+      if (!newImageUrls.has(oldUrl)) {
+        deleteUploadedFile(oldUrl);
+      }
+    }
+
+    // Push audit entries (cap at 50)
+    const auditEntry = {
+      adminId: req.user._id,
+      adminName: req.user.name,
+      section: updatedSections.join(', '),
+      action: 'updated',
+      timestamp: new Date(),
+    };
+
+    settings.auditLog.push(auditEntry);
+    if (settings.auditLog.length > 50) {
+      settings.auditLog = settings.auditLog.slice(-50);
+    }
+
+    await settings.save();
+
+    res.json({
+      success: true,
+      message: 'Settings updated successfully',
+      data: settings,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { getSettings, updateSettings };

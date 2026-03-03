@@ -59,6 +59,7 @@ app.use('/api/properties', require('./routes/property.routes'));
 app.use('/api/bookings', require('./routes/booking.routes'));
 app.use('/api/enquiries', require('./routes/enquiry.routes'));
 app.use('/api/upload', require('./routes/upload.routes'));
+app.use('/api/settings', require('./routes/settings.routes'));
 
 // Health check
 app.get('/api/health', (_req, res) => {
