@@ -1,5 +1,6 @@
 const Booking = require('../models/Booking');
 const Property = require('../models/Property');
+const { checkAvailability } = require('../utils/availability.util');
 
 /**
  * @desc    Create booking
@@ -34,19 +35,14 @@ const createBooking = async (req, res, next) => {
     const serviceFee = property.price.serviceFee || 0;
     const totalPrice = nightlyRate * numberOfNights + cleaningFee + serviceFee;
 
-    // Check for overlapping bookings
-    const overlapping = await Booking.findOne({
-      property: propertyId,
-      status: { $nin: ['cancelled'] },
-      $or: [
-        { checkIn: { $lt: checkOutDate }, checkOut: { $gt: checkInDate } },
-      ],
-    });
+    // Check for overlapping bookings AND blocked dates
+    const { available, conflicts } = await checkAvailability(propertyId, checkInDate, checkOutDate);
 
-    if (overlapping) {
+    if (!available) {
       return res.status(400).json({
         success: false,
         message: 'Property is not available for the selected dates',
+        conflicts,
       });
     }
 

@@ -1,4 +1,25 @@
 const Property = require('../models/Property');
+const path = require('path');
+const fs = require('fs');
+
+const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'properties');
+
+/**
+ * Delete an uploaded file given its URL. Silently skips external URLs.
+ */
+function deleteUploadedFile(url) {
+  if (!url) return;
+  try {
+    const match = url.match(/\/uploads\/properties\/([^/?#]+)/);
+    if (!match) return;
+    const filePath = path.join(UPLOADS_DIR, match[1]);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // Silently ignore
+  }
+}
 
 /**
  * @desc    Get all properties (with filtering, sorting, pagination)
@@ -130,16 +151,24 @@ const createProperty = async (req, res, next) => {
  */
 const updateProperty = async (req, res, next) => {
   try {
+    // Snapshot old image URLs before update
+    const oldProperty = await Property.findById(req.params.id);
+    if (!oldProperty) {
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+    const oldUrls = new Set((oldProperty.images || []).map((img) => img.url).filter(Boolean));
+
     const property = await Property.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
     });
 
-    if (!property) {
-      return res.status(404).json({
-        success: false,
-        message: 'Property not found',
-      });
+    // Delete orphaned images (old URLs not present in updated property)
+    const newUrls = new Set((property.images || []).map((img) => img.url).filter(Boolean));
+    for (const oldUrl of oldUrls) {
+      if (!newUrls.has(oldUrl)) {
+        deleteUploadedFile(oldUrl);
+      }
     }
 
     res.json({
@@ -162,10 +191,12 @@ const deleteProperty = async (req, res, next) => {
     const property = await Property.findByIdAndDelete(req.params.id);
 
     if (!property) {
-      return res.status(404).json({
-        success: false,
-        message: 'Property not found',
-      });
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+
+    // Clean up all images for this property
+    for (const img of property.images || []) {
+      if (img.url) deleteUploadedFile(img.url);
     }
 
     res.json({
@@ -176,6 +207,8 @@ const deleteProperty = async (req, res, next) => {
     next(error);
   }
 };
+
+const { checkAvailability, getUnavailableDates } = require('../utils/availability.util');
 
 /**
  * @desc    Get featured properties
@@ -194,6 +227,113 @@ const getFeaturedProperties = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Get unavailable dates for a property (bookings + blocked)
+ * @route   GET /api/properties/:id/availability
+ * @access  Public
+ */
+const getPropertyAvailability = async (req, res, next) => {
+  try {
+    const property = await Property.findById(req.params.id);
+    if (!property) {
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+
+    const ranges = await getUnavailableDates(req.params.id);
+    res.json({ success: true, data: ranges });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Block dates on a property (maintenance, etc.)
+ * @route   POST /api/properties/:id/block-dates
+ * @access  Private/Admin
+ */
+const blockDates = async (req, res, next) => {
+  try {
+    const { startDate, endDate, reason } = req.body;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (end <= start) {
+      return res.status(400).json({ success: false, message: 'endDate must be after startDate' });
+    }
+
+    const property = await Property.findById(req.params.id);
+    if (!property) {
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+
+    // Check for conflicts with existing bookings
+    const { available, conflicts } = await checkAvailability(req.params.id, start, end);
+    const bookingConflicts = conflicts.filter((c) => c.type === 'booking');
+    if (bookingConflicts.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Cannot block dates — there are confirmed bookings in this range',
+        conflicts: bookingConflicts,
+      });
+    }
+
+    property.blockedDates.push({ startDate: start, endDate: end, reason: reason || 'maintenance' });
+    await property.save();
+
+    res.json({
+      success: true,
+      message: 'Dates blocked successfully',
+      data: property.blockedDates,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Unblock dates on a property
+ * @route   DELETE /api/properties/:id/unblock-dates
+ * @access  Private/Admin
+ */
+const unblockDates = async (req, res, next) => {
+  try {
+    const { blockId } = req.body;
+
+    if (!blockId) {
+      return res.status(400).json({ success: false, message: 'blockId is required' });
+    }
+
+    const property = await Property.findById(req.params.id);
+    if (!property) {
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+
+    const blockIndex = property.blockedDates.findIndex(
+      (b) => b._id.toString() === blockId
+    );
+
+    if (blockIndex === -1) {
+      return res.status(404).json({ success: false, message: 'Block not found' });
+    }
+
+    property.blockedDates.splice(blockIndex, 1);
+    await property.save();
+
+    res.json({
+      success: true,
+      message: 'Dates unblocked successfully',
+      data: property.blockedDates,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getProperties,
   getProperty,
@@ -201,4 +341,7 @@ module.exports = {
   updateProperty,
   deleteProperty,
   getFeaturedProperties,
+  getPropertyAvailability,
+  blockDates,
+  unblockDates,
 };

@@ -76,10 +76,11 @@ const propertySchema = new mongoose.Schema(
     bedrooms: { type: Number, required: true, min: 0 },
     bathrooms: { type: Number, required: true, min: 0 },
     maxGuests: { type: Number, required: true, min: 1 },
-    availability: [
+    blockedDates: [
       {
         startDate: { type: Date, required: true },
         endDate: { type: Date, required: true },
+        reason: { type: String, default: 'maintenance' },
       },
     ],
     featured: { type: Boolean, default: false },
