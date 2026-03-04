@@ -1,6 +1,7 @@
 const Booking = require('../models/Booking');
 const Property = require('../models/Property');
 const { checkAvailability } = require('../utils/availability.util');
+const { stripe, isStripeEnabled } = require('../config/stripe');
 
 /**
  * @desc    Create booking
@@ -219,10 +220,143 @@ const simulatePayment = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Create Stripe Checkout Session for a booking
+ * @route   POST /api/bookings/create-checkout-session
+ * @access  Private
+ */
+const createCheckoutSession = async (req, res, next) => {
+  try {
+    if (!isStripeEnabled()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Stripe is not configured. Use simulated payment instead.',
+      });
+    }
+
+    const { property: propertyId, checkIn, checkOut, guests, specialRequests } = req.body;
+
+    // Fetch property from DB — never trust frontend pricing
+    const property = await Property.findById(propertyId);
+    if (!property) {
+      return res.status(404).json({ success: false, message: 'Property not found' });
+    }
+
+    const checkInDate = new Date(checkIn);
+    const checkOutDate = new Date(checkOut);
+    const diffTime = Math.abs(checkOutDate - checkInDate);
+    const numberOfNights = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (numberOfNights < 1) {
+      return res.status(400).json({ success: false, message: 'Minimum stay is 1 night' });
+    }
+
+    // Check availability (bookings + blocked dates)
+    const { available, conflicts } = await checkAvailability(propertyId, checkInDate, checkOutDate);
+    if (!available) {
+      return res.status(400).json({
+        success: false,
+        message: 'Property is not available for the selected dates',
+        conflicts,
+      });
+    }
+
+    // Server-calculated pricing
+    const nightlyRate = property.price.perNight;
+    const cleaningFee = property.price.cleaningFee || 0;
+    const serviceFee = property.price.serviceFee || 0;
+    const totalPrice = nightlyRate * numberOfNights + cleaningFee + serviceFee;
+
+    // Create pending booking first
+    const booking = await Booking.create({
+      property: propertyId,
+      user: req.user.id,
+      checkIn: checkInDate,
+      checkOut: checkOutDate,
+      guests,
+      nightlyRate,
+      numberOfNights,
+      cleaningFee,
+      serviceFee,
+      totalPrice,
+      specialRequests,
+      status: 'pending',
+      paymentStatus: 'pending',
+    });
+
+    // Build line items
+    const lineItems = [
+      {
+        price_data: {
+          currency: 'aed',
+          product_data: {
+            name: property.title,
+            description: `${numberOfNights} night${numberOfNights > 1 ? 's' : ''} · ${property.location.city}`,
+            images: property.images?.length > 0 ? [property.images[0].url].filter(u => u.startsWith('http')) : [],
+          },
+          unit_amount: Math.round(nightlyRate * 100), // Stripe uses cents
+        },
+        quantity: numberOfNights,
+      },
+    ];
+
+    if (cleaningFee > 0) {
+      lineItems.push({
+        price_data: {
+          currency: 'aed',
+          product_data: { name: 'Cleaning Fee' },
+          unit_amount: Math.round(cleaningFee * 100),
+        },
+        quantity: 1,
+      });
+    }
+
+    if (serviceFee > 0) {
+      lineItems.push({
+        price_data: {
+          currency: 'aed',
+          product_data: { name: 'Service Fee' },
+          unit_amount: Math.round(serviceFee * 100),
+        },
+        quantity: 1,
+      });
+    }
+
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'payment',
+      line_items: lineItems,
+      metadata: {
+        bookingId: booking._id.toString(),
+        propertyId: propertyId.toString(),
+        userId: req.user.id.toString(),
+        checkIn: checkInDate.toISOString(),
+        checkOut: checkOutDate.toISOString(),
+      },
+      success_url: `${clientUrl}/booking/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${clientUrl}/booking/cancel?booking_id=${booking._id}`,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        sessionId: session.id,
+        url: session.url,
+        bookingId: booking._id,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createBooking,
   getMyBookings,
   getAllBookings,
   updateBookingStatus,
   simulatePayment,
+  createCheckoutSession,
 };

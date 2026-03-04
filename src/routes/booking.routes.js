@@ -5,6 +5,7 @@ const {
   getAllBookings,
   updateBookingStatus,
   simulatePayment,
+  createCheckoutSession,
 } = require('../controllers/booking.controller');
 const { protect, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
@@ -15,6 +16,7 @@ const {
 
 // User routes
 router.post('/', protect, validate(createBookingSchema), createBooking);
+router.post('/create-checkout-session', protect, createCheckoutSession);
 router.get('/', protect, getMyBookings);
 router.put('/:id/pay', protect, simulatePayment);
 
