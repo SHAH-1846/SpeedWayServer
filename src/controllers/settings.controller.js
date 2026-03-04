@@ -53,22 +53,26 @@ async function migrateIfNeeded() {
   const raw = await collection.findOne({ key: SINGLETON_KEY });
   if (!raw) return;
 
-  let update = null;
+  const updates = {};
+
+  // Migrate coreServices from string[] to [{ name, icon }]
   const services = raw.aboutContent?.coreServices;
   if (Array.isArray(services) && services.length > 0 && typeof services[0] === 'string') {
     const defaultIcons = ['Building2', 'TrendingUp', 'MapPin', 'Lightbulb', 'Target'];
-    update = {
-      $set: {
-        'aboutContent.coreServices': services.map((s, i) => ({
-          name: s,
-          icon: defaultIcons[i] || '',
-        })),
-      },
-    };
+    updates['aboutContent.coreServices'] = services.map((s, i) => ({
+      name: s,
+      icon: defaultIcons[i] || '',
+    }));
   }
 
-  if (update) {
-    await collection.updateOne({ key: SINGLETON_KEY }, update);
+  // Migrate googleMapsEmbedUrl from nested companyInfo to top-level
+  if (!raw.googleMapsEmbedUrl) {
+    updates['googleMapsEmbedUrl'] = raw.companyInfo?.googleMapsEmbedUrl ||
+      'https://maps.google.com/maps?q=Speedway+Properties+LLC,Al+Mankhool,Bur+Dubai&t=&z=15&ie=UTF8&iwloc=&output=embed';
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await collection.updateOne({ key: SINGLETON_KEY }, { $set: updates });
   }
 }
 
@@ -125,9 +129,17 @@ const updateSettings = async (req, res, next) => {
     // Snapshot current image URLs BEFORE applying patches
     const oldImageUrls = collectImageUrls(settings);
 
-    // Apply updates
+    // Apply updates — merge nested objects, replace arrays and primitives
     for (const key of updatedSections) {
-      settings[key] = req.body[key];
+      const incoming = req.body[key];
+      if (incoming && typeof incoming === 'object' && !Array.isArray(incoming)) {
+        // Merge: spread existing first, then incoming overrides
+        const existing = settings.toObject()[key] || {};
+        settings.set(key, { ...existing, ...incoming });
+      } else {
+        settings.set(key, incoming);
+      }
+      settings.markModified(key);
     }
 
     // Find orphaned images (were in old data but not in new) and delete from disk
@@ -153,6 +165,17 @@ const updateSettings = async (req, res, next) => {
     }
 
     await settings.save();
+
+    // Direct MongoDB write for googleMapsEmbedUrl — bypasses Mongoose document issues
+    if (req.body.googleMapsEmbedUrl !== undefined) {
+      await GlobalSettings.collection.updateOne(
+        { key: SINGLETON_KEY },
+        { $set: { googleMapsEmbedUrl: req.body.googleMapsEmbedUrl } }
+      );
+    }
+
+    // Reload to get the correct data after raw update
+    settings = await GlobalSettings.findOne({ key: SINGLETON_KEY });
 
     res.json({
       success: true,

@@ -89,6 +89,13 @@ const globalSettingsSchema = new mongoose.Schema(
       workingHours: { type: String, default: 'Sun – Thu: 9:00 AM – 6:00 PM' },
     },
 
+    // Google Maps Embed URL (top-level for reliable CRUD)
+    googleMapsEmbedUrl: {
+      type: String,
+      default:
+        'https://maps.google.com/maps?q=Speedway+Properties+LLC,Al+Mankhool,Bur+Dubai&t=&z=15&ie=UTF8&iwloc=&output=embed',
+    },
+
     // About Content
     aboutContent: {
       philosophy: {

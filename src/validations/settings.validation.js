@@ -47,6 +47,7 @@ const updateSettingsSchema = z
     partners: z.array(partnerSchema).optional(),
     companyInfo: companyInfoSchema.optional(),
     aboutContent: aboutContentSchema.optional(),
+    googleMapsEmbedUrl: z.string().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'At least one section must be provided for update',
