@@ -65,6 +65,11 @@ const createPropertySchema = z.object({
   availability: z.array(availabilitySchema).optional().default([]),
   featured: z.boolean().optional().default(false),
   status: z.enum(['active', 'inactive', 'maintenance']).optional().default('active'),
+  externalLinks: z.object({
+    airbnb: z.string().optional().default(''),
+    bookingCom: z.string().optional().default(''),
+    agoda: z.string().optional().default(''),
+  }).optional(),
 }).transform((data) => {
   // Flatten capacity into top-level fields for Mongoose
   if (data.capacity) {
@@ -104,6 +109,11 @@ const updatePropertySchema = z.object({
   availability: z.array(availabilitySchema).optional(),
   featured: z.boolean().optional(),
   status: z.enum(['active', 'inactive', 'maintenance']).optional(),
+  externalLinks: z.object({
+    airbnb: z.string().optional(),
+    bookingCom: z.string().optional(),
+    agoda: z.string().optional(),
+  }).optional(),
 }).transform((data) => {
   if (data.capacity) {
     data.bedrooms = data.capacity.bedrooms;

@@ -91,6 +91,12 @@ const propertySchema = new mongoose.Schema(
     },
     rating: { type: Number, default: 0, min: 0, max: 5 },
     reviewCount: { type: Number, default: 0 },
+    // External booking platform links
+    externalLinks: {
+      airbnb: { type: String, default: '' },
+      bookingCom: { type: String, default: '' },
+      agoda: { type: String, default: '' },
+    },
     owner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
